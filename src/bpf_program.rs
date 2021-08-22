@@ -7,11 +7,15 @@
 
 //! Functionality related to BPF programs and maps.
 
+use std::fs;
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use object::Object;
+use object::ObjectSymbol;
+
+use anyhow::{anyhow, Context, Result};
 use glob::glob;
 use libbpf_rs::{RingBuffer, RingBufferBuilder};
 use log::Level;
@@ -24,6 +28,29 @@ use crate::ns;
 use crate::policy::Policy;
 use crate::uprobe_ext::FindSymbolUprobeExt;
 use crate::utils::bump_memlock_rlimit;
+
+// Taken from libbpf-bootstrap rust example tracecon
+// https://github.com/libbpf/libbpf-bootstrap/blob/master/examples/rust/tracecon/src/main.rs#L47
+// You can achieve a similar result using objdump -tT so_path | grep fn_name
+fn get_symbol_address(so_path: &str, fn_name: &str) -> Result<usize> {
+    let path = Path::new(so_path);
+    let buffer = fs::read(path)?;
+    let file = object::File::parse(buffer.as_slice())?;
+
+    let mut symbols = file.dynamic_symbols();
+    let symbol = symbols
+        .find(|symbol| {
+            if let Ok(name) = symbol.name() {
+                return name == fn_name;
+            }
+            false
+        })
+        .ok_or(anyhow!("symbol not found"))?;
+
+    println!("symbol {} address {}", symbol.name()?, symbol.address());
+
+    Ok(symbol.address() as usize)
+}
 
 pub struct BpfcontainContext<'a> {
     pub skel: BpfcontainSkel<'a>,
@@ -162,6 +189,17 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
             -1,
             bpfcontain_uprobes::do_containerize as *const () as usize,
         )?
+        .into();
+
+    let runc_binary_path = "/usr/bin/runc";
+    let runc_func_name = "x_cgo_init";
+
+    let runc_init_address = get_symbol_address(&runc_binary_path, &runc_func_name)?;
+
+    skel.links.runc_x_cgo_init_enter = skel
+        .progs_mut()
+        .runc_x_cgo_init_enter()
+        .attach_uprobe(false, -1, &runc_binary_path, runc_init_address)?
         .into();
 
     Ok(())

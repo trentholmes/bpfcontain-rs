@@ -76,7 +76,7 @@ fn generate_skeleton() {
 
 fn generate_vmlinux() {
     // Determine pathname for vmlinux header
-    let kernel_release = uname().expect("Failed to fetch system information").release;
+    let kernel_release = "5.11.0-25-generic"; // uname().expect("Failed to fetch system information").release;
     let vmlinux_path = PathBuf::from(format!("src/bpf/include/vmlinux_{}.h", kernel_release));
     let vmlinux_link_path = PathBuf::from("src/bpf/include/vmlinux.h");
 

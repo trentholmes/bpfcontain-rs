@@ -2310,6 +2310,49 @@ out:
     return 0;
 }
 
+/* Hook into Docker Container Creation
+ *
+ * Runc setups the entrypoint process of the Container. 
+ * The [nsenter package](https://github.com/opencontainers/runc/tree/master/libcontainer/nsenter) 
+ * leverages cgo to call [nsexec()](https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/nsexec.c#L610) 
+ * which creates new namespaces.
+ * 
+ * The package is imported by [init.go](https://github.com/opencontainers/runc/blob/master/init.go)
+ * 
+ * By hooking into this x_cgo_init probe, we catch the entrypoint process to the container
+ * Getting the task_struct using bpf_get_current_task_btf() we can get all the namespace information about the container.
+ * 
+ * Using this information we will add an entry to the processes and containers map 
+ * However, at this point we don't know which policy to apply so we will leave the policy ID null.
+ */
+SEC("uprobe/runc_x_cgo_init")
+int BPF_KPROBE(runc_x_cgo_init_enter)
+{
+    
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u32 pidNs = task->thread_pid->numbers[0].ns->ns.inum;
+    u32 subPidNs = task->nsproxy->pid_ns_for_children->ns.inum;
+    //u32 mntNs = task->nsproxy->mnt_ns->ns.inum;
+
+    // Note this UPROBE is called multiple times, some processes are used to setup the container 
+    // You can read about this magic here: https://github.com/opencontainers/runc/blob/master/libcontainer/nsenter/nsexec.c#L689
+    // We want to ignore these ones
+    // It looks like they will share the same namespace as PID=1 and not have a new NS for children
+    // We can check if PIDNS != subPidNS
+    if (pidNs != subPidNs) { // We only care about the entry process to the container 
+        bpf_printk("runc/init running!, ns: %u, subns: %u\n", pidNs, subPidNs);
+
+        // Add entries to the processes and containers map
+        /*if (!start_container(NULL, 1)) {
+            // TODO deal with error or log it
+            return = 0;
+        }*/
+    }
+    
+	return 0;
+}
+
+
 /* ========================================================================= *
  * License String                                                            *
  * ========================================================================= */
