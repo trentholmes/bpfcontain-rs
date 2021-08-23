@@ -31,7 +31,8 @@ use crate::utils::bump_memlock_rlimit;
 
 // Taken from libbpf-bootstrap rust example tracecon
 // https://github.com/libbpf/libbpf-bootstrap/blob/master/examples/rust/tracecon/src/main.rs#L47
-// You can achieve a similar result using objdump -tT so_path | grep fn_name
+// You can achieve a similar result for testing using objdump -tT so_path | grep fn_name
+// Note get_symbol_address with return the deciaml number and objdump uses hex
 fn get_symbol_address(so_path: &str, fn_name: &str) -> Result<usize> {
     let path = Path::new(so_path);
     let buffer = fs::read(path)?;
@@ -192,7 +193,7 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
         .into();
 
     let runc_binary_path = "/usr/bin/runc";
-    let runc_func_name = "x_cgo_init";
+    let runc_func_name = "main";
 
     let runc_init_address = get_symbol_address(&runc_binary_path, &runc_func_name)?;
 
