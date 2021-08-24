@@ -706,6 +706,7 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
         // TODO do we want to do something different here?
     }
 
+    bpf_printk("Adding process %u", get_current_ns_pid());
     if (!add_process_to_container(container, bpf_get_current_pid_tgid(),
                                   get_current_ns_pid_tgid())) {
         // TODO: Log that an error occurred
@@ -1103,7 +1104,8 @@ int BPF_PROG(inode_permission, struct inode *inode, int mask)
     if (!container)
         return 0;
 
-    bpf_printk("Called inode_permission, %d", inode->i_ino);
+    bpf_printk("Called inode_permission, %d, %d",inode->i_ino, mask);
+    
 
     // Make an access control decision
     return bpfcontain_inode_perm(container, inode, mask_to_access(inode, mask));
@@ -1141,7 +1143,7 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
     if (!container)
         return 0;
     
-    bpf_printk("Called bprm_check_security");
+    bpf_printk("Called bprm_check_security, %u", bprm->file->f_inode->i_ino);
 
     struct file *file = bprm->file;
     if (file) {
@@ -1927,7 +1929,7 @@ int BPF_PROG(task_kill, struct task_struct *target, struct kernel_siginfo *info,
     if (!container)
         return 0;
 
-    bpf_printk("Called task_kill");
+    bpf_printk("Called task_kill, %d", target->pid);
 
     // Look up the other container
     // If it's the same one, allow the access
@@ -2275,13 +2277,27 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
     // Look up the container using the current PID
     u32 pid                = bpf_get_current_pid_tgid();
     container_t *container = get_container_by_host_pid(pid);
-
+  
     // Unconfined
     if (!container)
         return 0;
 
-    bpf_printk("Called sb_mount");
-    // TODO docker setups up some mounts we need to allow
+    bpf_printk("Called sb_mount, %s, %d", type, path->dentry->d_inode->i_ino);
+    bpf_printk("sb_mount %s", dev_name);
+
+
+    fs_policy_key_t key = {};
+
+    key.policy_id = container->policy_id;
+    key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
+
+    file_policy_val_t val = {};
+    val.allow = OVERLAYFS_PERM_MASK;
+
+    bpf_map_update_elem(&fs_policy, &key, &val, BPF_NOEXIST);
+     bpf_printk("sb_mount added to allowed");
+
+    // TODO docker sets up up some mounts we need to allow
     return 0;
 
     return -EACCES;
@@ -2379,6 +2395,7 @@ int sched_process_fork(struct bpf_raw_tracepoint_args *args)
     u64 pid_tgid = (u64)child->tgid << 32 | child->pid;
 
     // Add the new process to the container
+    bpf_printk("Adding process %u", get_task_ns_pid(child));
     process_t *process = add_process_to_container(container, pid_tgid,
                                                   get_task_ns_pid_tgid(child));
     if (!process) {
@@ -2399,8 +2416,7 @@ int sched_process_exit(struct bpf_raw_tracepoint_args *args)
     if (!container)
         return 0;
 
-    bpf_printk("Removing process %d", task->pid);
-
+    bpf_printk("Removing process %u", get_current_ns_pid());
     remove_process_from_container(container, task->pid);
 
     return 0;
@@ -2483,6 +2499,24 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
     }
     
 	return 0;
+}
+
+SEC("kprobe/__x64_sys_execve")
+int BPF_KPROBE(__x64_sys_execve, char *pathname)
+{
+    // Look up the container using the current PID
+    u32 pid                = bpf_get_current_pid_tgid();
+    container_t *container = get_container_by_host_pid(pid);
+
+    // Unconfined
+    if (!container)
+      return 0;
+
+    bpf_printk("execve called %s", pathname);
+
+    //container->tainted = 1;
+
+    return 0;
 }
 
 
