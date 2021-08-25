@@ -699,6 +699,10 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
     // The UTS namespace hostname of the container. In docker and kubernetes,
     // this usually corresponds with their notion of a container id.
     get_current_uts_name(container->uts_name, sizeof(container->uts_name));
+    
+    // TODO - this appears to be my host computers hostname, not the container hostname
+    // look into why that is 
+    bpf_printk("uts_name %s", container->uts_name);
 
     // In a different namespace
     if (!under_init_nsproxy()) {
@@ -2499,6 +2503,33 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
     }
     
 	return 0;
+}
+
+// Function comes from https://github.com/docker/docker-ce/blob/master/components/engine/container/state.go#L267
+// It's called after staring a container here: https://github.com/docker/docker-ce/blob/master/components/engine/daemon/start.go#L209
+// It' called with the pid of the container
+// After this point we should lock down the container (start enforcing lsms on it)
+SEC("uprobe/dockerd_container_running")
+int BPF_KPROBE(dockerd_container_running_enter)
+{
+    // gcgo (which is what docker uses) passes arguments diffrently
+    // Followed from https://blog.px.dev/ebpf-function-tracing/post/
+    // (also helpful https://brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html)
+    u32 pid = ctx->ax;
+
+    bpf_printk("dockerd_container_running_enter called %u", pid);
+
+    container_t *container = get_container_by_host_pid(pid);
+    if (!container) {
+        bpf_printk("That's weird... no container was found for %u, was the runc uprobe invoked?");
+        return 0;
+    }
+
+    bpf_printk("container %s (pid=%u) has started. Starting enforcing on it.", container->uts_name, pid);
+    // TODO tell the container it's done starting, it now should enforce the policy 
+
+    
+    return 0;
 }
 
 SEC("kprobe/__x64_sys_execve")

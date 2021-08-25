@@ -203,6 +203,17 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
         .attach_uprobe(false, -1, &runc_binary_path, runc_init_address)?
         .into();
 
+    let dockerd_binary_path = "/usr/bin/dockerd";
+    let dockerd_func_name = "github.com/docker/docker/container.(*State).SetRunning";
+
+    let dockerd_running_address = get_symbol_address(&dockerd_binary_path, dockerd_func_name)?;
+
+    skel.links.dockerd_container_running_enter = skel
+        .progs_mut()
+        .dockerd_container_running_enter()
+        .attach_uprobe(false, -1, &dockerd_binary_path, dockerd_running_address)?
+        .into();
+
     Ok(())
 }
 
