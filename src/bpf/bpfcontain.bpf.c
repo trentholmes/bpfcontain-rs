@@ -189,8 +189,11 @@ static __always_inline int do_policy_decision(container_t *container,
                                               policy_decision_t decision,
                                               bool ignore_taint)
 {
-    // Todo - for docker we always want to just check container->tainted
-    bool tainted = container->tainted;
+    // Allow access to everything while runc creates a new docker container
+    if (container->status == DOCKER_INIT)
+        return 0;
+
+    bool tainted = container->tainted | ignore_taint;
 
     bpf_printk("Tainted %u", tainted);
 
@@ -651,7 +654,7 @@ remove_process_from_container(container_t *container, u32 host_pid)
  *    Otherwise, NULL
  */
 static __always_inline container_t *start_container(policy_id_t policy_id,
-                                                    bool tainted)
+                                                    bool tainted, container_status_t status)
 {
     bpf_printk("Starting a new container");
     // Allocate a new container
@@ -697,7 +700,7 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
     container->complain = common->complain;
     // Is the container in privileged mode?
     container->privileged = common->privileged;
-    
+
     // The UTS namespace hostname of the container. In docker and kubernetes,
     // this usually corresponds with their notion of a container id by default a docker containers hostname is it's containerID)
     // Note - for docker containers this hostname is not set right away, at this point it will match the host namespace
@@ -711,6 +714,8 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
         bpf_printk("This is a docker container");
         // TODO do we want to do something different here?
     }
+
+    container->status = status;
 
     bpf_printk("Adding process %u", get_current_ns_pid());
     if (!add_process_to_container(container, bpf_get_current_pid_tgid(),
@@ -831,6 +836,8 @@ static __always_inline int do_dev_permission(container_t *container,
 {
     int decision = BPFCON_NO_DECISION;
 
+    bpf_printk("Device Major:Minor = %u:%u", MAJOR(inode->i_rdev), MINOR(inode->i_rdev));
+
     dev_policy_key_t key = {};
 
     // Look up policy by device major number and policy ID
@@ -851,15 +858,26 @@ static __always_inline int do_dev_permission(container_t *container,
     if (!val)
         goto use_minor;
 
+    bpf_printk("Found access in the map for Major.* %u", val);
+
     // Entire access must match to allow
-    if ((val->allow & access) == access)
+    if ((val->allow & access) == access) {
+        bpf_printk("Allowed");
         decision |= BPFCON_ALLOW;
+    }
+        
     // Any part of access must match to taint
-    if ((val->taint & access))
+    if ((val->taint & access)) {
+        bpf_printk("Tainted");
         decision |= BPFCON_TAINT;
+    }
+        
     // Any part of access must match to deny
-    if ((val->deny & access))
+    if ((val->deny & access)) {
+        bpf_printk("Deny");
         decision |= BPFCON_DENY;
+    }
+        
 
     /*
      * Try with minor = i_rdev's minor second
@@ -868,7 +886,10 @@ use_minor:
     key.minor = MINOR(inode->i_rdev);
     val       = bpf_map_lookup_elem(&dev_policy, &key);
     if (!val)
-        return container->privileged ? BPFCON_NO_DECISION : BPFCON_DENY;
+        return decision;
+        //return container->privileged ? BPFCON_NO_DECISION : BPFCON_DENY;
+    
+    bpf_printk("Found access in the map for Major.Minor");
 
     // Entire access must match to allow
     if ((val->allow & access) == access)
@@ -1023,9 +1044,6 @@ bpfcontain_inode_perm(container_t *container, struct inode *inode, u32 access)
     // device-specific permissions
     if (inode_is_device(inode)) {
         bpf_printk("inode_is_device");
-        // TODO do_dev_permission needs to either accept /dev/ptmx as an option
-        // Or not deny if untainted
-        return 0;
         decision = do_dev_permission(container, inode, access);
         ret      = do_policy_decision(container, decision, true);
         goto out;
@@ -2167,8 +2185,10 @@ int BPF_PROG(key_alloc, int unused)
         return 0;
     
     bpf_printk("Called key_alloc");
-    //TODO docker containers need to run this during setup (untainted)
-    return 0;
+
+    // Allow this operation while runc creates a new docker container
+    if (container->status == DOCKER_INIT)
+        return 0;
 
     return -EACCES;
 }
@@ -2184,10 +2204,12 @@ int BPF_PROG(key_permission, int unused)
     // Unconfined
     if (!container)
         return 0;
-    
+
     bpf_printk("Called key_permission");
-    //TODO docker containers need to run this during setup (untainted)
-    return 0;
+
+    // Allow this operation while runc creates a new docker container
+    if (container->status == DOCKER_INIT)
+        return 0;
 
     return -EACCES;
 }
@@ -2291,20 +2313,25 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
     bpf_printk("Called sb_mount, %s, %d", type, path->dentry->d_inode->i_ino);
     bpf_printk("sb_mount %s", dev_name);
 
+    // Allow this operation while runc creates a new docker container
+    if (container->status == DOCKER_INIT){
 
-    fs_policy_key_t key = {};
+        // Allow implict access to any mounts runc creates
+        // TODO: Perform more validation to ensure that these are safe
+        fs_policy_key_t key = {};
+        key.policy_id = container->policy_id;
+        key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
 
-    key.policy_id = container->policy_id;
-    key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
+        file_policy_val_t val = {};
+        val.allow = OVERLAYFS_PERM_MASK;
 
-    file_policy_val_t val = {};
-    val.allow = OVERLAYFS_PERM_MASK;
+        bpf_map_update_elem(&fs_policy, &key, &val, BPF_NOEXIST);
 
-    bpf_map_update_elem(&fs_policy, &key, &val, BPF_NOEXIST);
-     bpf_printk("sb_mount added to allowed");
+        bpf_printk("sb_mount added to allowed");
 
-    // TODO docker sets up up some mounts we need to allow
-    return 0;
+        return 0;
+    }
+        
 
     return -EACCES;
 }
@@ -2453,7 +2480,7 @@ int BPF_KPROBE(do_containerize, int *ret_p, u64 policy_id)
 
     // Try to add a process to `processes` with `pid`/`tgid`, associated with
     // `policy_id`
-    if (!start_container(policy_id, common->default_taint)) {
+    if (!start_container(policy_id, common->default_taint, DEFAULT_SHIM)) {
         ret = -EINVAL;
         goto out;
     }
@@ -2498,7 +2525,7 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
         bpf_printk("runc/init running!, ns: %u, subns: %u\n", pidNs, subPidNs);
 
         // Add entries to the processes and containers map
-        if (!start_container(678271216382699131, 0)) {
+        if (!start_container(678271216382699131, 0, DOCKER_INIT)) {
             // TODO deal with error or log it
             return 0;
         }
@@ -2528,8 +2555,9 @@ int BPF_KPROBE(dockerd_container_running_enter)
     }
 
     bpf_printk("container %s (pid=%u) has started. Starting enforcing on it.", container->uts_name, pid);
-    // TODO tell the container it's done starting, it now should enforce the policy 
 
+    container->status = DOCKER_STARTED;
+    bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST);
     
     return 0;
 }
