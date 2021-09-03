@@ -279,6 +279,7 @@ static __always_inline void get_current_uts_name(char *dest, size_t size)
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
 
     char *uts_name = task->nsproxy->uts_ns->name.nodename;
+    //bpf_printk("Looked up hostname and found: %s", uts_name);
     if (uts_name)
         bpf_probe_read_str(dest, size, uts_name);
 }
@@ -696,12 +697,13 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
     container->complain = common->complain;
     // Is the container in privileged mode?
     container->privileged = common->privileged;
+    
     // The UTS namespace hostname of the container. In docker and kubernetes,
-    // this usually corresponds with their notion of a container id.
+    // this usually corresponds with their notion of a container id by default a docker containers hostname is it's containerID)
+    // Note - for docker containers this hostname is not set right away, at this point it will match the host namespace
+    // We will hook into the sethostname tracepoint to update this later (
     get_current_uts_name(container->uts_name, sizeof(container->uts_name));
     
-    // TODO - this appears to be my host computers hostname, not the container hostname
-    // look into why that is 
     bpf_printk("uts_name %s", container->uts_name);
 
     // In a different namespace
@@ -2529,6 +2531,33 @@ int BPF_KPROBE(dockerd_container_running_enter)
     // TODO tell the container it's done starting, it now should enforce the policy 
 
     
+    return 0;
+}
+
+SEC("tp/syscalls/sys_enter_sethostname")
+int sys_enter_sethostname(struct trace_event_raw_sys_enter  *ctx)
+{
+    // Look up the container using the current PID
+    u32 pid                = bpf_get_current_pid_tgid();
+    container_t *container = get_container_by_host_pid(pid);
+
+    // Unconfined
+    if (!container)
+      return 0;
+
+    // Can check what args are expected with 
+    // // sudo cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_sethostname/format
+    char* name = ctx->args[0];
+    //int len = ctx->args[1];
+
+    bpf_printk("tracepoint - sys_enter_sethostname called %s", name);
+
+    // IF Docker container is still in startup, we want to update our stored uts-name to match
+    bpf_probe_read_str(container->uts_name, sizeof(container->uts_name), name);
+
+    bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST);
+    bpf_printk("tracepoint - sys_enter_sethostname updated container hostname %s", container->uts_name);
+
     return 0;
 }
 
