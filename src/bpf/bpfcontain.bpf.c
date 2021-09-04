@@ -1025,6 +1025,10 @@ bpfcontain_inode_perm(container_t *container, struct inode *inode, u32 access)
     audit_data_t *event;
     policy_decision_t decision = BPFCON_NO_DECISION;
 
+    // Allow runc to access whatever it needs
+    if (container->status == DOCKER_INIT)
+        return 0;
+
     if (!inode)
         return 0;
 
