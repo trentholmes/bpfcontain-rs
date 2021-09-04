@@ -1485,6 +1485,10 @@ static __always_inline u8 family_to_category(int family)
 static __always_inline policy_decision_t
 bpfcontain_net_www_perm(container_t *container, u32 access)
 {
+    // Allow runc to access whatever it needs
+    if (container->status == DOCKER_INIT)
+        return BPFCON_ALLOW;
+
     policy_decision_t decision = BPFCON_NO_DECISION;
 
     net_policy_key_t key = {};
@@ -1517,8 +1521,10 @@ bpfcontain_net_www_perm(container_t *container, u32 access)
 static __always_inline policy_decision_t
 bpfcontain_net_ipc_perm(container_t *container, u32 access, struct socket *sock)
 {
-    // TODO Want to skip this for untained docker
-    return 0;
+    // Allow runc to access whatever it needs
+    if (container->status == DOCKER_INIT)
+        return BPFCON_ALLOW;
+    
     policy_decision_t decision = BPFCON_NO_DECISION;
 
     u32 other_pid = BPF_CORE_READ(sock, sk, sk_peer_pid, numbers[0].nr);
@@ -1956,6 +1962,10 @@ int BPF_PROG(task_kill, struct task_struct *target, struct kernel_siginfo *info,
     // Unconfined
     if (!container)
         return 0;
+    
+    // Allow runc to access whatever it needs
+    if (container->status == DOCKER_INIT)
+        return 0;
 
     bpf_printk("Called task_kill, %d", target->pid);
 
@@ -2026,6 +2036,10 @@ int BPF_PROG(capable, const struct cred *cred, struct user_namespace *ns,
         return 0;
     
     bpf_printk("Called capable");
+
+    // Allow runc to access whatever it needs
+    if (container->status == DOCKER_INIT)
+        return 0;
 
     // Convert cap to an "access vector"
     // (even though only one bit will be on at a time)
@@ -2314,24 +2328,30 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
     if (!container)
         return 0;
 
-    bpf_printk("Called sb_mount, %s, %d", type, path->dentry->d_inode->i_ino);
-    bpf_printk("sb_mount %s", dev_name);
+    bpf_printk("Called sb_mount type     %s", type);
+    bpf_printk("       sb_mount dev_name %s ", dev_name);
+    //bpf_printk("       sb_mount i_no     %u", path->dentry->d_inode->i_ino);
+    bpf_printk("       sb_mount device   %u:%u", MAJOR(path->mnt->mnt_root->d_inode->i_sb->s_dev),  MINOR(path->mnt->mnt_root->d_inode->i_sb->s_dev));
+    //bpf_printk("       sb_mount device   %u:%u", MAJOR(path->dentry->d_inode->i_rdev),  MINOR(path->dentry->d_inode->i_rdev));
+    //bpf_printk("       sb_mount device   %u:%u", MAJOR(path->dentry->d_inode->i_sb->s_dev),  MINOR(path->dentry->d_inode->i_sb->s_dev));
 
     // Allow this operation while runc creates a new docker container
     if (container->status == DOCKER_INIT){
 
         // Allow implict access to any mounts runc creates
+        // TODO: If the policy is changed we no longer have access to thiese mounts, either rethink how this is done
+        //       or tie this implicit mounts directly to the container rather than a policy
         // TODO: Perform more validation to ensure that these are safe
         fs_policy_key_t key = {};
         key.policy_id = container->policy_id;
         key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
 
         file_policy_val_t val = {};
-        val.allow = OVERLAYFS_PERM_MASK;
+        val.allow = OVERLAYFS_PERM_MASK | BPFCON_MAY_IOCTL;
 
         bpf_map_update_elem(&fs_policy, &key, &val, BPF_NOEXIST);
 
-        bpf_printk("sb_mount added to allowed");
+        //bpf_printk("sb_mount added to allowed");
 
         return 0;
     }
