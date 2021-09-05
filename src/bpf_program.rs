@@ -192,6 +192,16 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
         )?
         .into();
 
+    skel.links.do_apply_policy_to_container = skel
+        .progs_mut()
+        .do_apply_policy_to_container()
+        .attach_uprobe_addr(
+            false,
+            -1,
+            bpfcontain_uprobes::do_apply_policy_to_container as *const () as usize,
+        )?
+        .into();
+
     let runc_binary_path = "/usr/bin/runc";
     let runc_func_name = "main";
 

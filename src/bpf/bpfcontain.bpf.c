@@ -2516,6 +2516,41 @@ out:
     return 0;
 }
 
+SEC("uprobe/do_apply_policy_to_container")
+int BPF_KPROBE(do_apply_policy_to_container, int *ret_p, u64 pid, u64 policy_id)
+{
+    int ret = 0;
+
+    bpf_printk("do_apply_policy_to_container called for %u %u", pid, policy_id);
+
+    // Look up common policy information from policy_common map
+    policy_common_t *common = bpf_map_lookup_elem(&policy_common, &policy_id);
+    if (!common) {
+        ret = -ENOENT;
+        goto out;
+    }
+
+    container_t *container = get_container_by_host_pid(pid);
+    if (!container) {
+        ret = -ESRCH;
+        goto out;
+    }
+
+    bpf_printk("do_apply_policy_to_container updating from %u to %u", container->policy_id, policy_id);
+    container->policy_id = policy_id;
+    if(bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST)) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+out:
+    if (ret_p)
+        bpf_probe_write_user(ret_p, &ret, sizeof(ret));
+
+    return 0;
+}
+
+
 /* Hook into Docker Container Creation
  *
  * Runc setups the entrypoint process of the Container. 
