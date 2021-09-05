@@ -167,6 +167,11 @@ typedef struct {
 } __PACKED fs_policy_key_t;
 
 typedef struct {
+    u64 container_id;
+    u32 device_id;
+} __PACKED fs_implict_policy_key_t;
+
+typedef struct {
     u64 policy_id;
     u64 inode_id;
     u32 device_id;

@@ -644,6 +644,75 @@ remove_process_from_container(container_t *container, u32 host_pid)
     bpf_map_delete_elem(&processes, &host_pid);
 }
 
+static __always_inline container_t *start_docker_container(){
+    bpf_printk("Starting a new container");
+    // Allocate a new container
+    container_t *container = new_container_t();
+    if (!container) {
+        // TODO: Log that an error occurred
+        return NULL;
+    }
+
+    u32 pid = bpf_get_current_pid_tgid();
+
+    // Initialize the container
+    // The container id is a 64 bit integer where the upper 32 bits are a random
+    // integer and the lower 32 bits are the _host_ pid of the initial process.
+    container->container_id = ((u64)bpf_get_prandom_u32() << 32 | pid);
+    // The mount ns id of the container
+    container->mnt_ns_id = get_current_mnt_ns_id();
+    // The pid ns id of the container
+    container->pid_ns_id = get_current_pid_ns_id();
+    // The user ns id of the container
+    container->user_ns_id = get_current_user_ns_id();
+
+    // When docker containers are started up they recieve their own implict policy - using their container_id as the policy_id
+    container->policy_id = container->container_id;
+
+    // The container's refcount (number of associated processes)
+    // This value is _only_ modified atomically
+    container->refcount = 0;
+
+    // Is the container tainted?
+    container->tainted = 1;
+
+    // Is the container in complaining mode?
+    container->complain = 0;
+    // Is the container in privileged mode?
+    container->privileged = 0;
+
+    // The UTS namespace hostname of the container. In docker and kubernetes,
+    // this usually corresponds with their notion of a container id by default a docker containers hostname is it's containerID)
+    // Note - for docker containers this hostname is not set right away, at this point it will match the host namespace
+    // We will hook into the sethostname tracepoint to update this later (
+    get_current_uts_name(container->uts_name, sizeof(container->uts_name));
+    
+    bpf_printk("uts_name %s", container->uts_name);
+
+    // In a different namespace
+    if (!under_init_nsproxy()) {
+        bpf_printk("This is a docker container");
+        // TODO do we want to do something different here?
+    }
+
+    container->status = DOCKER_INIT;
+
+    bpf_printk("Adding process %u", get_current_ns_pid());
+    if (!add_process_to_container(container, bpf_get_current_pid_tgid(),
+                                  get_current_ns_pid_tgid())) {
+        // TODO: Log that an error occurred
+        return NULL;
+    }
+
+    // Add the container to the containers map
+    bpf_map_update_elem(&containers, &container->container_id, container,
+                        BPF_NOEXIST);
+
+    bpf_printk("Successfully added a new container");
+    // Look up the result and return it
+    return bpf_map_lookup_elem(&containers, &container->container_id);
+}
+
 /* Start a new container.
  *
  * Params:
@@ -768,20 +837,36 @@ static __always_inline int do_fs_permission(container_t *container,
 {
     int decision = BPFCON_NO_DECISION;
 
-    fs_policy_key_t key = {};
+    fs_policy_key_t policy_key = {};
+    policy_key.policy_id = container->policy_id;
+    policy_key.device_id = new_encode_dev(inode->i_sb->s_dev);
 
-    key.policy_id = container->policy_id;
-    key.device_id = new_encode_dev(inode->i_sb->s_dev);
+    file_policy_val_t *policy_val = bpf_map_lookup_elem(&fs_policy, &policy_key);
 
-    file_policy_val_t *val = bpf_map_lookup_elem(&fs_policy, &key);
     // Entire access must match to allow
-    if (val && (val->allow & access) == access)
+    if (policy_val && (policy_val->allow & access) == access)
         decision |= BPFCON_ALLOW;
     // Any part of access must match to taint
-    if (val && (val->taint & access))
+    if (policy_val && (policy_val->taint & access))
         decision |= BPFCON_TAINT;
     // Any part of access must match to deny
-    if (val && (val->deny & access))
+    if (policy_val && (policy_val->deny & access))
+        decision |= BPFCON_DENY;
+
+    fs_implict_policy_key_t implicit_key = {};
+    implicit_key.container_id = container->container_id;
+    implicit_key.device_id = new_encode_dev(inode->i_sb->s_dev);
+
+    file_policy_val_t *implict_val = bpf_map_lookup_elem(&fs_implict_policy, &implicit_key);
+
+    // Entire access must match to allow
+    if (implict_val && (implict_val->allow & access) == access)
+        decision |= BPFCON_ALLOW;
+    // Any part of access must match to taint
+    if (implict_val && (implict_val->taint & access))
+        decision |= BPFCON_TAINT;
+    // Any part of access must match to deny
+    if (implict_val && (implict_val->deny & access))
         decision |= BPFCON_DENY;
 
     return decision;
@@ -2342,14 +2427,14 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
         // TODO: If the policy is changed we no longer have access to thiese mounts, either rethink how this is done
         //       or tie this implicit mounts directly to the container rather than a policy
         // TODO: Perform more validation to ensure that these are safe
-        fs_policy_key_t key = {};
-        key.policy_id = container->policy_id;
+        fs_implict_policy_key_t key = {};
+        key.container_id = container->container_id;
         key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
 
         file_policy_val_t val = {};
         val.allow = OVERLAYFS_PERM_MASK | BPFCON_MAY_IOCTL;
 
-        bpf_map_update_elem(&fs_policy, &key, &val, BPF_NOEXIST);
+        bpf_map_update_elem(&fs_implict_policy, &key, &val, BPF_NOEXIST);
 
         //bpf_printk("sb_mount added to allowed");
 
@@ -2521,7 +2606,7 @@ int BPF_KPROBE(do_apply_policy_to_container, int *ret_p, u64 pid, u64 policy_id)
 {
     int ret = 0;
 
-    bpf_printk("do_apply_policy_to_container called for %u %u", pid, policy_id);
+    bpf_printk("do_apply_policy_to_container called for %u %llu", pid, policy_id);
 
     // Look up common policy information from policy_common map
     policy_common_t *common = bpf_map_lookup_elem(&policy_common, &policy_id);
@@ -2536,7 +2621,8 @@ int BPF_KPROBE(do_apply_policy_to_container, int *ret_p, u64 pid, u64 policy_id)
         goto out;
     }
 
-    bpf_printk("do_apply_policy_to_container updating from %u to %u", container->policy_id, policy_id);
+    bpf_printk("do_apply_policy_to_container container_id %llu", container->container_id);
+    bpf_printk("do_apply_policy_to_container updating from %llu to %llu", container->policy_id, policy_id);
     container->policy_id = policy_id;
     if(bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST)) {
         ret = -EINVAL;
@@ -2584,7 +2670,7 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
         bpf_printk("runc/init running!, ns: %u, subns: %u\n", pidNs, subPidNs);
 
         // Add entries to the processes and containers map
-        if (!start_container(678271216382699131, 0, DOCKER_INIT)) {
+        if (!start_docker_container()) {
             // TODO deal with error or log it
             return 0;
         }
