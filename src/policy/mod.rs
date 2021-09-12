@@ -160,11 +160,32 @@ impl Policy {
         value.set_privileged(self.privileged as u8);
         let value = unsafe { as_bytes(&value) };
 
-        map.update(key, value, MapFlags::ANY)
+        // TODO Should be able to set these flags optionally, want it to be ANY to start, but changed to NO_EXIST IN work_loop
+        map.update(key, value, MapFlags::NO_EXIST)
             .context("Failed to update policy map")?;
 
         Ok(())
     }
+
+    /*// Check if the policy has already been loaded into the kernel
+    pub fn check_common(&self, skel: &mut Skel) -> bool {
+        type Key = keys::PolicyId;
+
+        // Get correct map
+        let mut maps = skel.maps_mut();
+        let map = maps.policy_common();
+
+        let key: Key = self.policy_id();
+        let key = unsafe { as_bytes(&key) };
+
+        if let Err(e) = map.lookup(key, MapFlags::ANY) {
+            println!("Policy not found {}", e);
+            return false;
+        };
+
+        println!("Policy found");
+        return true
+    }*/
 
     /// Unload the policy from the kernel
     pub fn unload(&self, skel: &mut Skel) -> Result<()> {

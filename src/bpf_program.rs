@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -90,12 +91,17 @@ impl<'a> BpfcontainContext<'a> {
     }
 
     /// Main BPFContain work loop
-    pub fn work_loop(&self) {
+    pub fn work_loop(&mut self) {
         loop {
             if let Err(e) = self.ringbuf.poll(Duration::new(1, 0)) {
                 log::warn!("Failed to poll ring buffer: {}", e);
             }
-            sleep(Duration::from_millis(100));
+            // TODO use config policy dir, rather than this hardcoded value
+            // TODO Update the loading of the policies, so that it doesn't output a warning if it already exists
+            if let Err(e) = self.load_policy_from_dir(PathBuf::from("/var/lib/bpfcontain/policy")) {
+                log::warn!("Failed to load the policies: {}", e);
+            }
+            sleep(Duration::from_millis(10000));
         }
     }
 
@@ -103,6 +109,11 @@ impl<'a> BpfcontainContext<'a> {
     pub fn load_policy(&mut self, policy: &Policy) -> Result<()> {
         log::debug!("Loading policy {}...", policy.name);
 
+        // Todo: Optionally do a check to see if the policy already exists, if so then don't try loading it again
+        //if policy.check_common(&mut self.skel) {
+        //    println!("Don't load the policy again");
+        //    return Ok(())
+        //}else {
         policy
             .load(&mut self.skel)
             .context(format!("Failed to load policy {}", policy.name))
