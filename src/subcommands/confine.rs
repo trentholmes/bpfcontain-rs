@@ -1,6 +1,4 @@
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Context as _, Result};
 use clap::ArgMatches;
