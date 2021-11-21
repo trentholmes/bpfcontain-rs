@@ -195,33 +195,25 @@ static __always_inline int do_policy_decision(container_t *container,
 
     bool tainted = container->tainted | ignore_taint;
 
-    
-
     // Taint container
     if (decision & BPFCON_TAINT) {
-        
         container->tainted = 1;
     }
 
     // Always deny if denied
     if (decision & BPFCON_DENY && !container->complain) {
-        
         return -EACCES;
     }
 
     // Always allow if allowed and not denied
     if (decision & BPFCON_ALLOW) {
-        
         return 0;
     }
 
     // If tainted with no policy decision, deny
     if (tainted && !container->complain) {
-        
         return -EACCES;
     }
-
-    
 
     return 0;
 }
@@ -282,7 +274,6 @@ static __always_inline void get_current_uts_name(char *dest, size_t size)
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
 
     char *uts_name = task->nsproxy->uts_ns->name.nodename;
-    //
     if (uts_name)
         bpf_probe_read_str(dest, size, uts_name);
 }
@@ -737,7 +728,6 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
     policy_common_t *common = bpf_map_lookup_elem(&policy_common, &policy_id);
     if (!common) {
         // TODO: Log that an error occurred
-        
         return NULL;
     }
 
@@ -760,11 +750,7 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
     // This value is _only_ modified atomically
     container->refcount = 0;
     // Is the container tainted?
-    
-    
     container->tainted = tainted || common->default_taint;
-
-    
     // Is the container in complaining mode?
     container->complain = common->complain;
     // Is the container in privileged mode?
@@ -772,21 +758,15 @@ static __always_inline container_t *start_container(policy_id_t policy_id,
 
     // The UTS namespace hostname of the container. In docker and kubernetes,
     // this usually corresponds with their notion of a container id by default a docker containers hostname is it's containerID)
-    // Note - for docker containers this hostname is not set right away, at this point it will match the host namespace
-    // We will hook into the sethostname tracepoint to update this later (
     get_current_uts_name(container->uts_name, sizeof(container->uts_name));
     
-    
-
     // In a different namespace
     if (!under_init_nsproxy()) {
-        
         // TODO do we want to do something different here?
     }
 
     container->status = status;
 
-    
     if (!add_process_to_container(container, bpf_get_current_pid_tgid(),
                                   get_current_ns_pid_tgid())) {
         // TODO: Log that an error occurred
@@ -965,9 +945,6 @@ use_minor:
     val       = bpf_map_lookup_elem(&dev_policy, &key);
     if (!val)
         return decision;
-        //return container->privileged ? BPFCON_NO_DECISION : BPFCON_DENY;
-    
-    
 
     // Entire access must match to allow
     if ((val->allow & access) == access)
@@ -1125,7 +1102,6 @@ bpfcontain_inode_perm(container_t *container, struct inode *inode, u32 access)
 
     // device-specific permissions
     if (inode_is_device(inode)) {
-        
         decision = do_dev_permission(container, inode, access);
         ret      = do_policy_decision(container, decision, true);
         goto out;
@@ -1135,18 +1111,14 @@ bpfcontain_inode_perm(container_t *container, struct inode *inode, u32 access)
     // so we can allow reads, writes, and appends on sockets here
     if (inode_is_sock(inode) && (access & ~(BPFCON_MAY_READ | BPFCON_MAY_WRITE |
                                             BPFCON_MAY_APPEND)) == 0) {
-        
         ret = do_policy_decision(container, BPFCON_ALLOW, false);
         goto out;
     }
 
     // per-file allow should override per filesystem deny
     decision |= do_procfs_permission(container, inode, access);
-    //
     decision |= do_task_inode_permission(container, inode, access);
-    //
     decision |= do_file_permission(container, inode, access);
-    //
 
     // per-file allow should override per filesystem deny
     if ((decision & BPFCON_ALLOW) && !(decision & BPFCON_DENY))
@@ -1190,8 +1162,6 @@ int BPF_PROG(inode_init_security, struct inode *inode, struct inode *dir,
     if (!container)
         return 0;
     
-    
-
     // Add the newly created inode to the container's list of inodes.
     // This will then be used as a sensible default when computing
     // permissions.add_inode_to_container(container, inode);
@@ -1210,9 +1180,6 @@ int BPF_PROG(inode_permission, struct inode *inode, int mask)
     if (!container)
         return 0;
 
-    
-    
-
     // Make an access control decision
     return bpfcontain_inode_perm(container, inode, mask_to_access(inode, mask));
 }
@@ -1228,8 +1195,6 @@ int BPF_PROG(file_receive, struct file *file)
     if (!container)
         return 0;
     
-    
-
     // Make an access control decision
     return bpfcontain_inode_perm(container, file->f_inode,
                                  file_to_access(file));
@@ -1248,8 +1213,6 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     struct file *file = bprm->file;
     if (file) {
@@ -1273,8 +1236,6 @@ int BPF_PROG(path_unlink, const struct path *dir, struct dentry *dentry)
     if (!container)
         return 0;
 
-    
-
     return bpfcontain_inode_perm(container, dentry->d_inode, BPFCON_MAY_DELETE);
 }
 
@@ -1289,8 +1250,6 @@ int BPF_PROG(path_rmdir, const struct path *dir, struct dentry *dentry)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     return bpfcontain_inode_perm(container, dentry->d_inode, BPFCON_MAY_DELETE);
 }
@@ -1307,8 +1266,6 @@ int BPF_PROG(path_mknod, const struct path *dir, struct dentry *dentry,
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int ret = bpfcontain_inode_perm(container, dir->dentry->d_inode,
                                     BPFCON_MAY_APPEND);
@@ -1332,8 +1289,6 @@ int BPF_PROG(path_mkdir, const struct path *dir, struct dentry *dentry)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return bpfcontain_inode_perm(container, dir->dentry->d_inode,
                                  BPFCON_MAY_APPEND);
@@ -1351,8 +1306,6 @@ int BPF_PROG(path_symlink, const struct path *dir, struct dentry *dentry,
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return bpfcontain_inode_perm(container, dir->dentry->d_inode,
                                  BPFCON_MAY_APPEND);
@@ -1372,8 +1325,6 @@ int BPF_PROG(path_link, struct dentry *old_dentry, const struct path *new_dir,
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     ret = bpfcontain_inode_perm(container, new_dir->dentry->d_inode,
                                 BPFCON_MAY_APPEND);
@@ -1398,8 +1349,6 @@ int BPF_PROG(path_rename, const struct path *old_dir, struct dentry *old_dentry,
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     struct inode *old_dir_inode = old_dir->dentry->d_inode;
     struct inode *old_inode     = old_dentry->d_inode;
@@ -1428,8 +1377,6 @@ int BPF_PROG(path_truncate, const struct path *path)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return bpfcontain_inode_perm(container, path->dentry->d_inode,
                                  BPFCON_MAY_WRITE);
@@ -1446,8 +1393,6 @@ int BPF_PROG(path_chmod, const struct path *path)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     return bpfcontain_inode_perm(container, path->dentry->d_inode,
                                  BPFCON_MAY_CHMOD);
@@ -1499,8 +1444,6 @@ int BPF_PROG(mmap_file, struct file *file, unsigned long reqprot,
     if (!container)
         return 0;
 
-    
-
     return mmap_permission(container, file, prot, flags);
 }
 
@@ -1516,8 +1459,6 @@ int BPF_PROG(file_mprotect, struct vm_area_struct *vma, unsigned long reqprot,
     if (!container)
         return 0;
 
-    
-
     return mmap_permission(container, vma->vm_file, prot,
                            !(vma->vm_flags & VM_SHARED) ? MAP_PRIVATE : 0);
 }
@@ -1532,8 +1473,6 @@ int BPF_PROG(file_ioctl, struct file *file, unsigned int cmd, unsigned long arg)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     return bpfcontain_inode_perm(container, file->f_inode, BPFCON_MAY_IOCTL);
 }
@@ -1669,8 +1608,6 @@ int BPF_PROG(socket_create, int family, int type, int protocol, int kern)
     if (!container)
         return 0;
 
-    
-
     u8 category = family_to_category(family);
 
     return bpfcontain_net_perm(container, category, BPFCON_NET_CREATE, NULL);
@@ -1687,8 +1624,6 @@ int BPF_PROG(socket_bind, struct socket *sock, struct sockaddr *address,
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     u8 category = family_to_category(address->sa_family);
 
@@ -1707,8 +1642,6 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address,
     if (!container)
         return 0;
 
-    
-
     u8 category = family_to_category(address->sa_family);
 
     return bpfcontain_net_perm(container, category, BPFCON_NET_CONNECT, sock);
@@ -1726,8 +1659,6 @@ int BPF_PROG(unix_stream_connect, struct socket *sock, struct socket *other,
     if (!container)
         return 0;
 
-    
-
     u8 category = family_to_category(AF_UNIX);
 
     return bpfcontain_net_perm(container, category, BPFCON_NET_CONNECT, sock);
@@ -1744,8 +1675,6 @@ int BPF_PROG(unix_may_send, struct socket *sock, struct socket *other)
     if (!container)
         return 0;
 
-    
-
     u8 category = family_to_category(AF_UNIX);
 
     return bpfcontain_net_perm(container, category, BPFCON_NET_SEND, sock);
@@ -1761,8 +1690,6 @@ int BPF_PROG(socket_listen, struct socket *sock, int backlog)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     u8 category = family_to_category(sock->sk->__sk_common.skc_family);
 
@@ -1779,8 +1706,6 @@ int BPF_PROG(socket_accept, struct socket *sock, struct socket *newsock)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     u8 category = family_to_category(sock->sk->__sk_common.skc_family);
 
@@ -1797,8 +1722,6 @@ int BPF_PROG(socket_sendmsg, struct socket *sock, struct msghdr *msg, int size)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     u8 category = family_to_category(sock->sk->__sk_common.skc_family);
 
@@ -1817,8 +1740,6 @@ int BPF_PROG(socket_recvmsg, struct socket *sock, struct msghdr *msg, int size,
     if (!container)
         return 0;
 
-    
-
     u8 category = family_to_category(sock->sk->__sk_common.skc_family);
 
     return bpfcontain_net_perm(container, category, BPFCON_NET_RECV, sock);
@@ -1834,8 +1755,6 @@ int BPF_PROG(socket_shutdown, struct socket *sock, int how)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     u8 category = family_to_category(sock->sk->__sk_common.skc_family);
 
@@ -1874,8 +1793,6 @@ int BPF_PROG(ipc_permission, struct kern_ipc_perm *ipcp, short flag)
     if (!container)
         return 0;
 
-    
-
     container_t *other = NULL;
 
     // Look up other container id
@@ -1900,8 +1817,6 @@ int BPF_PROG(msg_queue_alloc_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int id = ipcp->id;
     bpf_map_update_elem(&ipc_handles, &id, &container->container_id,
@@ -1920,8 +1835,6 @@ int BPF_PROG(msg_queue_free_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int id = ipcp->id;
     bpf_map_delete_elem(&ipc_handles, &id);
@@ -1939,8 +1852,6 @@ int BPF_PROG(shm_alloc_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int id = ipcp->id;
     bpf_map_update_elem(&ipc_handles, &id, &container->container_id,
@@ -1959,8 +1870,6 @@ int BPF_PROG(shm_free_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int id = ipcp->id;
     bpf_map_delete_elem(&ipc_handles, &id);
@@ -1978,8 +1887,6 @@ int BPF_PROG(sem_alloc_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     int id = ipcp->id;
     bpf_map_update_elem(&ipc_handles, &id, &container->container_id,
@@ -1998,8 +1905,6 @@ int BPF_PROG(sem_free_security, struct kern_ipc_perm *ipcp)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     int id = ipcp->id;
     bpf_map_delete_elem(&ipc_handles, &id);
@@ -2044,8 +1949,6 @@ int BPF_PROG(task_kill, struct task_struct *target, struct kernel_siginfo *info,
     // Allow runc to access whatever it needs
     if (container->status == DOCKER_INIT)
         return 0;
-
-    
 
     // Look up the other container
     // If it's the same one, allow the access
@@ -2112,8 +2015,6 @@ int BPF_PROG(capable, const struct cred *cred, struct user_namespace *ns,
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     // Allow runc to access whatever it needs
     if (container->status == DOCKER_INIT)
@@ -2173,8 +2074,6 @@ int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return -EACCES;
 }
@@ -2190,8 +2089,6 @@ int BPF_PROG(locked_down, enum lockdown_reason what)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     // We need to allow LOCKDOWN_BPF_READ so our probes work
     if (what == LOCKDOWN_BPF_READ)
@@ -2211,8 +2108,6 @@ int BPF_PROG(perf_event_open, struct perf_event_attr *attr, int type)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return -EACCES;
 }
@@ -2229,8 +2124,6 @@ int BPF_PROG(perf_event_alloc, struct perf_event *event)
     if (!container)
         return 0;
 
-    
-
     return -EACCES;
 }
 
@@ -2245,8 +2138,6 @@ int BPF_PROG(perf_event_read, struct perf_event *event)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return -EACCES;
 }
@@ -2262,8 +2153,6 @@ int BPF_PROG(perf_event_write, struct perf_event *event)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return -EACCES;
 }
@@ -2279,8 +2168,6 @@ int BPF_PROG(key_alloc, int unused)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     // Allow this operation while runc creates a new docker container
     if (container->status == DOCKER_INIT)
@@ -2301,8 +2188,6 @@ int BPF_PROG(key_permission, int unused)
     if (!container)
         return 0;
 
-    
-
     // Allow this operation while runc creates a new docker container
     if (container->status == DOCKER_INIT)
         return 0;
@@ -2321,8 +2206,6 @@ int BPF_PROG(settime, int unused)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     return -EACCES;
 }
@@ -2339,8 +2222,6 @@ int BPF_PROG(ptrace_access_check, struct task_struct *child, unsigned int mode)
     // Unconfined
     if (!container)
         return 0;
-    
-    
 
     // Parent is unconfined
     if (!child_container)
@@ -2365,8 +2246,6 @@ int BPF_PROG(ptrace_traceme, struct task_struct *parent)
     // Unconfined
     if (!container)
         return 0;
-
-    
 
     // Parent is unconfined
     if (!parent_container)
@@ -2424,7 +2303,6 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
 
         return 0;
     }
-        
 
     return -EACCES;
 }
@@ -2441,8 +2319,6 @@ int fentry_switch_task_namespaces(struct task_struct *p, struct nsproxy *new)
     // Unconfined
     if (!container)
         return 0;
-        
-    
 
     bpf_send_signal(SIGKILL);
 
@@ -2605,8 +2481,6 @@ int BPF_KPROBE(do_apply_policy_to_container, int *ret_p, u64 pid, u64 policy_id)
         goto out;
     }
 
-    
-    
     container->policy_id = policy_id;
     if(bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST)) {
         ret = -EINVAL;
@@ -2651,8 +2525,6 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
     // It looks like they will share the same namespace as PID=1 and not have a new NS for children
     // We can check if PIDNS != subPidNS
     if (pidNs != subPidNs) { // We only care about the entry process to the container 
-        
-
         // Add entries to the processes and containers map
         if (!start_docker_container()) {
             // TODO deal with error or log it
@@ -2675,15 +2547,11 @@ int BPF_KPROBE(dockerd_container_running_enter)
     // (also helpful https://brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html)
     u32 pid = ctx->ax;
 
-    
-
     container_t *container = get_container_by_host_pid(pid);
     if (!container) {
         
         return 0;
     }
-
-    
 
     container->status = DOCKER_STARTED;
     bpf_map_update_elem(&containers, &container->container_id, container, BPF_EXIST);
@@ -2707,8 +2575,6 @@ int sys_enter_sethostname(struct trace_event_raw_sys_enter  *ctx)
     char* name = ctx->args[0];
     //int len = ctx->args[1];
 
-    
-
     // IF Docker container is still in startup, we want to update our stored uts-name to match
     bpf_probe_read_str(container->uts_name, sizeof(container->uts_name), name);
 
@@ -2717,25 +2583,6 @@ int sys_enter_sethostname(struct trace_event_raw_sys_enter  *ctx)
 
     return 0;
 }
-
-SEC("kprobe/__x64_sys_execve")
-int BPF_KPROBE(__x64_sys_execve, char *pathname)
-{
-    // Look up the container using the current PID
-    u32 pid                = bpf_get_current_pid_tgid();
-    container_t *container = get_container_by_host_pid(pid);
-
-    // Unconfined
-    if (!container)
-      return 0;
-
-    
-
-    //container->tainted = 1;
-
-    return 0;
-}
-
 
 /* ========================================================================= *
  * License String                                                            *
