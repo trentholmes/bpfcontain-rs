@@ -123,8 +123,6 @@ impl Policy {
         self.load_rules(&self.restrictions, PolicyDecision::Deny, skel);
         self.load_rules(&self.taints, PolicyDecision::Taint, skel);
 
-        println!("Name: {} Id: {}", self.name, self.policy_id());
-
         Ok(())
     }
 
