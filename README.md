@@ -81,7 +81,7 @@ If you want/need to generate a new `vmlinux.h` (e.g. to support a non-standard k
     * `bpfcontain run <policy.yml>` where policy is the name of your policy
 
 ## Docker usage
-[Docker README](DOCKER)
+[Docker README](DOCKER.md)
 
 ## Policy Language
 
