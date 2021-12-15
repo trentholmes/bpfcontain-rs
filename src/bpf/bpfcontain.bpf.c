@@ -664,7 +664,7 @@ static __always_inline container_t *start_docker_container(){
     // This value is _only_ modified atomically
     container->refcount = 0;
 
-    // Is the container tainted?
+    // Is the container tainted? Yes
     container->tainted = 1;
 
     // Is the container in complaining mode?
@@ -678,14 +678,6 @@ static __always_inline container_t *start_docker_container(){
     // We will hook into the sethostname tracepoint to update this later (
     get_current_uts_name(container->uts_name, sizeof(container->uts_name));
     
-    
-
-    // In a different namespace
-    if (!under_init_nsproxy()) {
-        
-        // TODO do we want to do something different here?
-    }
-
     container->status = DOCKER_INIT;
 
     
@@ -877,10 +869,8 @@ static __always_inline int do_file_permission(container_t *container,
     if (val && (val->allow & access) == access)
         decision |= BPFCON_ALLOW;
     // Any part of access must match to taint
-    if (val && (val->taint & access)){
-        
+    if (val && (val->taint & access))
         decision |= BPFCON_TAINT;
-    }
     // Any part of access must match to deny
     if (val && (val->deny & access))
         decision |= BPFCON_DENY;
@@ -944,7 +934,7 @@ use_minor:
     key.minor = MINOR(inode->i_rdev);
     val       = bpf_map_lookup_elem(&dev_policy, &key);
     if (!val)
-        return decision;
+        return container->privileged ? BPFCON_NO_DECISION : BPFCON_DENY;
 
     // Entire access must match to allow
     if ((val->allow & access) == access)
@@ -1161,7 +1151,7 @@ int BPF_PROG(inode_init_security, struct inode *inode, struct inode *dir,
     // Unconfined
     if (!container)
         return 0;
-    
+
     // Add the newly created inode to the container's list of inodes.
     // This will then be used as a sensible default when computing
     // permissions.add_inode_to_container(container, inode);
@@ -1194,7 +1184,7 @@ int BPF_PROG(file_receive, struct file *file)
     // Unconfined
     if (!container)
         return 0;
-    
+
     // Make an access control decision
     return bpfcontain_inode_perm(container, file->f_inode,
                                  file_to_access(file));
@@ -2289,9 +2279,6 @@ int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
     if (container->status == DOCKER_INIT){
 
         // Allow implict access to any mounts runc creates
-        // TODO: If the policy is changed we no longer have access to thiese mounts, either rethink how this is done
-        //       or tie this implicit mounts directly to the container rather than a policy
-        // TODO: Perform more validation to ensure that these are safe
         fs_implict_policy_key_t key = {};
         key.container_id = container->container_id;
         key.device_id = new_encode_dev(path->dentry->d_inode->i_sb->s_dev);
@@ -2341,7 +2328,7 @@ int fentry_switch_task_namespaces(struct task_struct *p, struct nsproxy *new)
 //
 //    // In a lower namespace
 //    long cred_user_ns_addr = (long)BPF_CORE_READ(new, user_ns);
-//    
+//    bpf_printk("%lx", cred_user_ns_addr);
 //    if (cred_user_ns_addr && cred_user_ns_addr != (long)&init_user_ns)
 //        return 0;
 //
@@ -2357,11 +2344,11 @@ int fentry_switch_task_namespaces(struct task_struct *p, struct nsproxy *new)
 //    u32 new_euid = BPF_CORE_READ(new, euid.val);
 //    u32 new_egid = BPF_CORE_READ(new, egid.val);
 //
-//    
-//    
-//    
-//    
-//    
+//    bpf_printk("old_uid = %u new_uid = %u", old_uid, new_uid);
+//    bpf_printk("old_gid = %u new_gid = %u", old_gid, new_gid);
+//    bpf_printk("old_euid = %u new_euid = %u", old_euid, new_euid);
+//    bpf_printk("old_egid = %u new_egid = %u", old_egid, new_egid);
+//    bpf_printk("");
 //
 //    if (old_uid != 0 && new_uid == 0)
 //        bpf_send_signal(SIGKILL);
@@ -2397,7 +2384,6 @@ int sched_process_fork(struct bpf_raw_tracepoint_args *args)
     u64 pid_tgid = (u64)child->tgid << 32 | child->pid;
 
     // Add the new process to the container
-    
     process_t *process = add_process_to_container(container, pid_tgid,
                                                   get_task_ns_pid_tgid(child));
     if (!process) {
@@ -2418,7 +2404,6 @@ int sched_process_exit(struct bpf_raw_tracepoint_args *args)
     if (!container)
         return 0;
 
-    
     remove_process_from_container(container, task->pid);
 
     return 0;
@@ -2461,12 +2446,18 @@ out:
     return 0;
 }
 
+/* BPF program endpoint for do_apply_policy_to_container in libbpfcontain.
+ *
+ * @ret_p: Pointer to the return value of wrapper function.
+ * @pid: root pid of the container with which to associate.
+ * @policy_id: the policy to assign to the container.
+ *
+ * return: Converted access mask.
+ */
 SEC("uprobe/do_apply_policy_to_container")
 int BPF_KPROBE(do_apply_policy_to_container, int *ret_p, u64 pid, u64 policy_id)
 {
     int ret = 0;
-
-    
 
     // Look up common policy information from policy_common map
     policy_common_t *common = bpf_map_lookup_elem(&policy_common, &policy_id);
@@ -2494,6 +2485,9 @@ out:
     return 0;
 }
 
+/* ========================================================================= *
+ * Docker Integration                                                           *
+ * ========================================================================= */
 
 /* Hook into Docker Container Creation
  *
@@ -2508,7 +2502,7 @@ out:
  * Getting the task_struct using bpf_get_current_task_btf() we can get all the namespace information about the container.
  * 
  * Using this information we will add an entry to the processes and containers map 
- * However, at this point we don't know which policy to apply so we will leave the policy ID null.
+ * At this point we apply a default policy.
  */
 SEC("uprobe/runc_x_cgo_init")
 int BPF_KPROBE(runc_x_cgo_init_enter)
@@ -2538,7 +2532,7 @@ int BPF_KPROBE(runc_x_cgo_init_enter)
 // Function comes from https://github.com/docker/docker-ce/blob/master/components/engine/container/state.go#L267
 // It's called after staring a container here: https://github.com/docker/docker-ce/blob/master/components/engine/daemon/start.go#L209
 // It' called with the pid of the container
-// After this point we should lock down the container (start enforcing lsms on it)
+// After this point we should lock down the container (start enforcing policy rules on it)
 SEC("uprobe/dockerd_container_running")
 int BPF_KPROBE(dockerd_container_running_enter)
 {
@@ -2571,9 +2565,8 @@ int sys_enter_sethostname(struct trace_event_raw_sys_enter  *ctx)
       return 0;
 
     // Can check what args are expected with 
-    // // sudo cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_sethostname/format
+    // sudo cat /sys/kernel/debug/tracing/events/syscalls/sys_enter_sethostname/format
     char* name = ctx->args[0];
-    //int len = ctx->args[1];
 
     // IF Docker container is still in startup, we want to update our stored uts-name to match
     bpf_probe_read_str(container->uts_name, sizeof(container->uts_name), name);

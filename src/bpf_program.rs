@@ -31,8 +31,9 @@ use crate::utils::bump_memlock_rlimit;
 
 // Taken from libbpf-bootstrap rust example tracecon
 // https://github.com/libbpf/libbpf-bootstrap/blob/master/examples/rust/tracecon/src/main.rs#L47
+// Authored by Magnus Kulke
 // You can achieve a similar result for testing using objdump -tT so_path | grep fn_name
-// Note get_symbol_address with return the deciaml number and objdump uses hex
+// Note get_symbol_address will return the deciaml number and objdump uses hex
 fn get_symbol_address(so_path: &str, fn_name: &str) -> Result<usize> {
     let path = Path::new(so_path);
     let buffer = fs::read(path)?;
@@ -47,8 +48,6 @@ fn get_symbol_address(so_path: &str, fn_name: &str) -> Result<usize> {
             false
         })
         .ok_or(anyhow!("symbol not found"))?;
-
-    println!("symbol {} address {}", symbol.name()?, symbol.address());
 
     Ok(symbol.address() as usize)
 }
@@ -202,6 +201,7 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
         )?
         .into();
 
+    // TODO: Dynamically lookup binary path
     let runc_binary_path = "/usr/bin/runc";
     let runc_func_name = "main";
 
@@ -213,6 +213,7 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
         .attach_uprobe(false, -1, &runc_binary_path, runc_init_address)?
         .into();
 
+    // TODO: Dynamically lookup binary path
     let dockerd_binary_path = "/usr/bin/dockerd";
     let dockerd_func_name = "github.com/docker/docker/container.(*State).SetRunning";
 
