@@ -934,7 +934,7 @@ use_minor:
     key.minor = MINOR(inode->i_rdev);
     val       = bpf_map_lookup_elem(&dev_policy, &key);
     if (!val)
-        return container->privileged ? BPFCON_NO_DECISION : BPFCON_DENY;
+        return container->privileged ? BPFCON_NO_DECISION : decision;
 
     // Entire access must match to allow
     if ((val->allow & access) == access)
