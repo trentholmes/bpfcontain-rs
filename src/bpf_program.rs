@@ -203,7 +203,7 @@ fn attach_uprobes(skel: &mut BpfcontainSkel) -> Result<()> {
 
     // TODO: Dynamically lookup binary path
     let runc_binary_path = "/usr/bin/runc";
-    let runc_func_name = "main";
+    let runc_func_name = "x_cgo_init";
 
     let runc_init_address = get_symbol_address(&runc_binary_path, &runc_func_name)?;
 
