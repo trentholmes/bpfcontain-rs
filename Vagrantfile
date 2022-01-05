@@ -20,7 +20,6 @@ Vagrant.configure("2") do |config|
       fi
 
       sudo pacman --noconfirm -Syu
-      sudo pacman --noconfim archlinux-keyring
       sudo pacman --noconfirm -S rust clang make libelf bpf libbpf lib32-glibc
       sudo pacman --noconfirm -S docker
     "
